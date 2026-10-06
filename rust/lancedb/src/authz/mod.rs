@@ -40,6 +40,9 @@ pub mod privilege;
 pub mod subject;
 
 pub use api::*;
-pub use object::{DatabaseObject, NamespaceObject, NamespacePath, Object, TableObject, ViewObject};
+pub use object::{
+    DatabaseObject, FunctionObject, NamespaceObject, NamespacePath, Object, SecretObject,
+    TableObject, ViewObject,
+};
 pub use privilege::*;
 pub use subject::{Subject, SubjectKind};

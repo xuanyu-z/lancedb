@@ -388,6 +388,22 @@ def test_api_key_subject_is_not_logged(catalog_server):
     "builder, kwargs, wire",
     [
         ("system", {}, "system"),
+        ("secret", {"database": "db", "name": "api-key"}, "secret:db:public$api-key"),
+        (
+            "function",
+            {"database": "db", "name": "caption"},
+            "function:db:public$caption",
+        ),
+        (
+            "secret",
+            {"database": "tenant/db", "namespace": ["a", "b"], "name": "api-key"},
+            "secret:tenant/db:a$b$api-key",
+        ),
+        (
+            "function",
+            {"database": "tenant/db", "namespace": ["a", "b"], "name": "caption"},
+            "function:tenant/db:a$b$caption",
+        ),
         ("database", {"name": "tenant/db"}, "database:tenant/db"),
         (
             "namespace",
@@ -469,6 +485,12 @@ def test_rust_backed_subject_selectors(kind, prefix):
         "table:db:public$..",
         "table:db:a/b$events",
         "view:db:public$café",
+        "secret:db:public$",
+        "function:db:public$..",
+        "secret:db:a$$key",
+        "function:db:caption",
+        "secret:db:public$bad/name",
+        "function:db:public$bad:name",
         "system:db",
     ],
 )
@@ -484,8 +506,16 @@ def test_invalid_raw_objects_fail_before_io(catalog_server, wire):
     assert requests == []
 
 
-@pytest.mark.parametrize("wire", ["future:db:resource", "table_extension:db:resource"])
-def test_unknown_objects_round_trip(catalog_server, wire):
+@pytest.mark.parametrize(
+    "wire",
+    [
+        "future:db:resource",
+        "table_extension:db:resource",
+        "secret:tenant/db:a$b$key",
+        "function:tenant/db:a$b$caption",
+    ],
+)
+def test_objects_round_trip_through_acl_requests(catalog_server, wire):
     endpoint, requests, responses = catalog_server
     responses.extend(
         [
@@ -730,3 +760,21 @@ def test_acl_page_preserves_unknown_subjects(catalog_server, asynchronous):
     asyncio.run(exercise())
     assert len(requests) == 2
     assert requests[1][2]["subject"] == "x:future-subject"
+
+
+@pytest.mark.parametrize("builder", ["secret", "function"])
+def test_secret_and_function_builders_validate_components(builder):
+    from lancedb import _lancedb
+
+    for database, namespace, name in [
+        ("a//b", ["public"], "valid"),
+        ("db", [], "valid"),
+        ("db", ["a$b"], "valid"),
+        ("db", "public", "valid"),
+        ("db", ["public"], "bad$name"),
+        ("db", ["public"], ".."),
+    ]:
+        with pytest.raises(ValueError):
+            getattr(Object, builder)(database=database, namespace=namespace, name=name)
+        with pytest.raises(ValueError):
+            getattr(_lancedb.AuthzObject, builder)(database, namespace, name)

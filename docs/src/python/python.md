@@ -55,8 +55,9 @@ with `kind="unknown"` and its full wire string in `value`. ACL pages retain both
 known and unknown subjects, and the returned `Subject` can be passed back to ACL
 methods.
 
-A principal uniquely identifies each user accessing the system. Each API key
-corresponds to a unique principal, and each OpenID user has a unique principal.
+A principal uniquely identifies each user accessing the system. Each LanceDB
+Enterprise API key corresponds to a unique principal, and each OpenID user has
+a unique principal.
 
 All principals have an immutable ID which never changes, and is safe to include
 in log files. For example, the API key
@@ -132,6 +133,14 @@ Similarly, View objects represent specific views. For example,
 `Object.view(database="analytics", name="recent_events")` represents the
 "recent_events" view inside the "analytics" table. Views are in the default
 namespace (which is named "public") unless a specific namespaces is given.
+
+Secret objects identify named credentials, for example,
+`Object.secret(database="analytics", name="api-key")`. Function objects identify
+registered functions, for example,
+`Object.function(database="analytics", name="caption")`. Both default to the
+`public` namespace. Pass `namespace=["platform", "ml"]` to select a nested
+namespace. These objects identify resources for ACL operations; a secret object
+contains the credential's name, not its value.
 
 ### Access control lists
 

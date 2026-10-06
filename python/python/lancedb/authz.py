@@ -162,6 +162,20 @@ class Object:
         """A view, defaulting to the database's public namespace."""
         return cls(str(_lancedb.AuthzObject.view(database, namespace, name)))
 
+    @classmethod
+    def secret(
+        cls, *, database: str, name: str, namespace: Sequence[str] = ("public",)
+    ) -> "Object":
+        """A secret, defaulting to the database's public namespace."""
+        return cls(str(_lancedb.AuthzObject.secret(database, namespace, name)))
+
+    @classmethod
+    def function(
+        cls, *, database: str, name: str, namespace: Sequence[str] = ("public",)
+    ) -> "Object":
+        """A function, defaulting to the database's public namespace."""
+        return cls(str(_lancedb.AuthzObject.function(database, namespace, name)))
+
     def __str__(self) -> str:
         return str(self._inner)
 

@@ -253,6 +253,24 @@ impl AuthzObject {
         }))
     }
 
+    #[staticmethod]
+    fn secret(database: &str, namespace: &Bound<'_, PyAny>, name: &str) -> PyResult<Self> {
+        Self::validated(Object::Secret(SecretObject {
+            database: database.into(),
+            namespace: namespace_path(namespace)?,
+            secret: name.into(),
+        }))
+    }
+
+    #[staticmethod]
+    fn function(database: &str, namespace: &Bound<'_, PyAny>, name: &str) -> PyResult<Self> {
+        Self::validated(Object::Function(FunctionObject {
+            database: database.into(),
+            namespace: namespace_path(namespace)?,
+            function: name.into(),
+        }))
+    }
+
     fn __str__(&self) -> String {
         self.inner.to_string()
     }

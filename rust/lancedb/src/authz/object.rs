@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use crate::utils::{validate_database_name, validate_namespace_name, validate_table_name};
+use crate::utils::{
+    validate_database_name, validate_namespace_name, validate_secret_component, validate_table_name,
+};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _, ser::Error as _};
 
-/// The default namespace for tables and views.
+/// The default namespace for tables, views, secrets, and functions.
 pub const DEFAULT_NAMESPACE: &str = "public";
 
 pub const SYSTEM_TYPE_STRING: &str = "system";
@@ -12,6 +14,8 @@ pub const DATABASE_TYPE_STRING: &str = "database";
 pub const NAMESPACE_TYPE_STRING: &str = "namespace";
 pub const TABLE_TYPE_STRING: &str = "table";
 pub const VIEW_TYPE_STRING: &str = "view";
+pub const SECRET_TYPE_STRING: &str = "secret";
+pub const FUNCTION_TYPE_STRING: &str = "function";
 pub const UNKNOWN_TYPE_STRING: &str = "unknown";
 
 /// A non-empty path through the namespace hierarchy.
@@ -80,6 +84,8 @@ pub enum Object {
     Namespace(NamespaceObject),
     Table(TableObject),
     View(ViewObject),
+    Secret(SecretObject),
+    Function(FunctionObject),
     Unknown(String),
 }
 
@@ -92,6 +98,8 @@ impl Object {
             Self::Namespace(object) => object.validate(),
             Self::Table(object) => object.validate(),
             Self::View(object) => object.validate(),
+            Self::Secret(object) => object.validate(),
+            Self::Function(object) => object.validate(),
             Self::Unknown(value) if value.is_empty() => Err("object must not be empty".into()),
             Self::Unknown(_) => Ok(()),
         }
@@ -105,6 +113,8 @@ impl Object {
             Self::Namespace(object) => Some(&object.database),
             Self::Table(object) => Some(&object.database),
             Self::View(object) => Some(&object.database),
+            Self::Secret(object) => Some(&object.database),
+            Self::Function(object) => Some(&object.database),
             Self::Unknown(_) => None,
         }
     }
@@ -116,6 +126,8 @@ impl Object {
             Self::Namespace(_) => NAMESPACE_TYPE_STRING,
             Self::Table(_) => TABLE_TYPE_STRING,
             Self::View(_) => VIEW_TYPE_STRING,
+            Self::Secret(_) => SECRET_TYPE_STRING,
+            Self::Function(_) => FUNCTION_TYPE_STRING,
             Self::Unknown(_) => UNKNOWN_TYPE_STRING,
         }
     }
@@ -140,6 +152,8 @@ impl std::fmt::Display for Object {
             Self::Namespace(object) => object.fmt(f),
             Self::Table(object) => object.fmt(f),
             Self::View(object) => object.fmt(f),
+            Self::Secret(object) => object.fmt(f),
+            Self::Function(object) => object.fmt(f),
             Self::Unknown(s) => f.write_str(s),
         }
     }
@@ -184,6 +198,16 @@ impl<'de> Deserialize<'de> for Object {
             let view =
                 ViewObject::deserialize(serde::de::value::StringDeserializer::<D::Error>::new(s))?;
             Ok(Self::View(view))
+        } else if kind == SECRET_TYPE_STRING {
+            let secret = SecretObject::deserialize(
+                serde::de::value::StringDeserializer::<D::Error>::new(s),
+            )?;
+            Ok(Self::Secret(secret))
+        } else if kind == FUNCTION_TYPE_STRING {
+            let function = FunctionObject::deserialize(serde::de::value::StringDeserializer::<
+                D::Error,
+            >::new(s))?;
+            Ok(Self::Function(function))
         } else {
             Ok(Self::Unknown(s))
         }
@@ -395,6 +419,141 @@ impl<'de> Deserialize<'de> for ViewObject {
         Ok(object)
     }
 }
+/// A secret resource, encoded as `secret:DATABASE:NAMESPACE$SECRET`.
+///
+/// ```
+/// use lancedb::authz::{SecretObject, NamespacePath, Object};
+///
+/// let object = Object::Secret(SecretObject {
+///     database: "analytics".into(),
+///     namespace: NamespacePath::from_component("public"),
+///     secret: "example".into(),
+/// });
+/// assert_eq!(object.to_string(), "secret:analytics:public$example");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SecretObject {
+    pub database: String,
+    pub namespace: NamespacePath,
+    pub secret: String,
+}
+
+impl SecretObject {
+    fn validate(&self) -> Result<(), String> {
+        validate_database_name(&self.database).map_err(|error| error.to_string())?;
+        validate_secret_component("Secret name", &self.secret)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for SecretObject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "secret:{}:{}${}",
+            self.database, self.namespace, self.secret
+        )
+    }
+}
+
+impl Serialize for SecretObject {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.validate().map_err(S::Error::custom)?;
+        self.to_string().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SecretObject {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        let invalid = || D::Error::custom(format!("invalid SecretObject {s:?}"));
+        let rest = s.strip_prefix("secret:").ok_or_else(invalid)?;
+        let (database, path) = rest.split_once(':').ok_or_else(invalid)?;
+        let (namespace, secret) = path.rsplit_once('$').ok_or_else(invalid)?;
+        let object = Self {
+            database: database.to_string(),
+            namespace: NamespacePath::parse(namespace).map_err(D::Error::custom)?,
+            secret: secret.to_string(),
+        };
+        object.validate().map_err(D::Error::custom)?;
+        Ok(object)
+    }
+}
+
+/// A function resource, encoded as `function:DATABASE:NAMESPACE$FUNCTION`.
+///
+/// ```
+/// use lancedb::authz::{FunctionObject, NamespacePath, Object};
+///
+/// let object = Object::Function(FunctionObject {
+///     database: "analytics".into(),
+///     namespace: NamespacePath::from_component("public"),
+///     function: "example".into(),
+/// });
+/// assert_eq!(object.to_string(), "function:analytics:public$example");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FunctionObject {
+    pub database: String,
+    pub namespace: NamespacePath,
+    pub function: String,
+}
+
+impl FunctionObject {
+    fn validate(&self) -> Result<(), String> {
+        validate_database_name(&self.database).map_err(|error| error.to_string())?;
+        validate_table_name(&self.function).map_err(|error| error.to_string())?;
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for FunctionObject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "function:{}:{}${}",
+            self.database, self.namespace, self.function
+        )
+    }
+}
+
+impl Serialize for FunctionObject {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.validate().map_err(S::Error::custom)?;
+        self.to_string().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for FunctionObject {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        let invalid = || D::Error::custom(format!("invalid FunctionObject {s:?}"));
+        let rest = s.strip_prefix("function:").ok_or_else(invalid)?;
+        let (database, path) = rest.split_once(':').ok_or_else(invalid)?;
+        let (namespace, function) = path.rsplit_once('$').ok_or_else(invalid)?;
+        let object = Self {
+            database: database.to_string(),
+            namespace: NamespacePath::parse(namespace).map_err(D::Error::custom)?,
+            function: function.to_string(),
+        };
+        object.validate().map_err(D::Error::custom)?;
+        Ok(object)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,6 +611,62 @@ mod tests {
         let encoded = serde_json::to_string(&object).unwrap();
         assert_eq!(encoded, r#""view:db:ns$foo""#);
         assert_eq!(serde_json::from_str::<Object>(&encoded).unwrap(), object);
+    }
+
+    #[test]
+    fn secret_objects_round_trip_and_validate() {
+        let resource = SecretObject {
+            database: "tenant/db".into(),
+            namespace: NamespacePath::new(vec!["a".into(), "b".into()]).unwrap(),
+            secret: "example".into(),
+        };
+        let wire = "secret:tenant/db:a$b$example";
+        assert_eq!(serde_json::to_value(&resource).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<SecretObject>(serde_json::json!(wire)).unwrap(),
+            resource
+        );
+        let object = Object::Secret(resource.clone());
+        assert_eq!(object.database(), Some("tenant/db"));
+        assert_eq!(object.type_name(), "secret");
+        assert_eq!(wire.parse::<Object>().unwrap(), object);
+        assert_eq!(serde_json::to_value(object).unwrap(), wire);
+        for name in ["", ".", "..", "bad$name", "bad/name", "bad:name"] {
+            let invalid = SecretObject {
+                secret: name.into(),
+                ..resource.clone()
+            };
+            assert!(serde_json::to_value(&invalid).is_err());
+            assert!(serde_json::to_value(Object::Secret(invalid)).is_err());
+        }
+    }
+
+    #[test]
+    fn function_objects_round_trip_and_validate() {
+        let resource = FunctionObject {
+            database: "tenant/db".into(),
+            namespace: NamespacePath::new(vec!["a".into(), "b".into()]).unwrap(),
+            function: "example".into(),
+        };
+        let wire = "function:tenant/db:a$b$example";
+        assert_eq!(serde_json::to_value(&resource).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<FunctionObject>(serde_json::json!(wire)).unwrap(),
+            resource
+        );
+        let object = Object::Function(resource.clone());
+        assert_eq!(object.database(), Some("tenant/db"));
+        assert_eq!(object.type_name(), "function");
+        assert_eq!(wire.parse::<Object>().unwrap(), object);
+        assert_eq!(serde_json::to_value(object).unwrap(), wire);
+        for name in ["", ".", "..", "bad$name", "bad/name", "bad:name"] {
+            let invalid = FunctionObject {
+                function: name.into(),
+                ..resource.clone()
+            };
+            assert!(serde_json::to_value(&invalid).is_err());
+            assert!(serde_json::to_value(Object::Function(invalid)).is_err());
+        }
     }
 
     #[test]
@@ -573,6 +788,8 @@ mod tests {
             "namespace:tenant/db:a$b",
             "table:tenant/db:a$b$c",
             "view:tenant/db:a$b$c",
+            "secret:tenant/db:a$b$c",
+            "function:tenant/db:a$b$c",
         ] {
             let object: Object = serde_json::from_value(serde_json::json!(wire)).unwrap();
             assert_eq!(wire.parse::<Object>().unwrap(), object);
@@ -602,6 +819,8 @@ mod tests {
                 format!("namespace:{database}:ns"),
                 format!("table:{database}:ns$t"),
                 format!("view:{database}:ns$v"),
+                format!("secret:{database}:ns$s"),
+                format!("function:{database}:ns$f"),
             ] {
                 assert!(
                     serde_json::from_value::<Object>(serde_json::json!(wire)).is_err(),
@@ -616,6 +835,10 @@ mod tests {
                 format!("view:db:{name}$v"),
                 format!("table:db:ns${name}"),
                 format!("view:db:ns${name}"),
+                format!("secret:db:{name}$s"),
+                format!("function:db:{name}$f"),
+                format!("secret:db:ns${name}"),
+                format!("function:db:ns${name}"),
             ] {
                 assert!(
                     serde_json::from_value::<Object>(serde_json::json!(wire)).is_err(),
@@ -640,6 +863,16 @@ mod tests {
             "view:db:ns$..",
             "table:db:a$$t",
             "view:db:$v",
+            "secret",
+            "function",
+            "secret:db/ns/s",
+            "function:db/ns/f",
+            "secret:db:ns",
+            "function:db:ns",
+            "secret:db:a$$s",
+            "function:db:$f",
+            "secret:db:ns$.",
+            "function:db:ns$..",
         ] {
             assert!(
                 serde_json::from_value::<Object>(serde_json::json!(wire)).is_err(),
