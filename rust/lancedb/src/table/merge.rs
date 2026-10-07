@@ -1868,4 +1868,125 @@ mod lsm_tests {
             "LSM vector search must rank the memtable row first"
         );
     }
+
+    /// Claims the base table's bitmap index, which Lance maintains no memtable
+    /// kind for, and keeps it as a B-tree: the B-tree hands the flush rows in
+    /// the shape the bitmap trainer takes.
+    #[derive(Debug)]
+    struct BitmapAsBTree;
+
+    fn btree_plugin() -> Arc<dyn lance::dataset::mem_wal::index::MemIndexPlugin> {
+        lance::dataset::mem_wal::MemIndexRegistry::default()
+            .plugin_for_details_url("/lance.table.BTreeIndexDetails")
+            .unwrap()
+            .clone()
+    }
+
+    #[async_trait::async_trait]
+    impl lance::dataset::mem_wal::index::MemIndexPlugin for BitmapAsBTree {
+        fn name(&self) -> &str {
+            "BitmapAsBTree"
+        }
+        fn details_message(&self) -> &str {
+            "BitmapIndexDetails"
+        }
+        fn flush_index_type(&self) -> lance_index::IndexType {
+            lance_index::IndexType::Bitmap
+        }
+        fn training_criteria(&self) -> lance_index::scalar::registry::TrainingCriteria {
+            btree_plugin().training_criteria()
+        }
+        fn validate(
+            &self,
+            ctx: &lance::dataset::mem_wal::index::MemIndexBuildContext<'_>,
+        ) -> lance_core::Result<()> {
+            btree_plugin().validate(ctx)
+        }
+        fn create(
+            &self,
+            ctx: &lance::dataset::mem_wal::index::MemIndexBuildContext<'_>,
+        ) -> lance_core::Result<Arc<dyn lance::dataset::mem_wal::index::MemIndex>> {
+            btree_plugin().create(ctx)
+        }
+    }
+
+    /// A kind Lance has no memtable index for is refused when named, until the
+    /// table is given a registry that maintains it; then the kind is maintained
+    /// for rows written through the LSM, and their flushed generation carries
+    /// its index.
+    #[tokio::test]
+    async fn lsm_maintains_an_index_kind_from_the_tables_registry() {
+        let dir = tempdir().unwrap();
+        let conn = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_table("t", id_region_reader(vec![(1, "us"), (2, "eu"), (3, "us")]))
+            .execute()
+            .await
+            .unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        table
+            .create_index(&["region"], crate::index::Index::Bitmap(Default::default()))
+            .name("region_bitmap".to_string())
+            .execute()
+            .await
+            .unwrap();
+        let spec =
+            || LsmWriteSpec::unsharded().with_maintained_indexes(vec!["region_bitmap".to_string()]);
+
+        let refused = table.set_lsm_write_spec(spec()).await.unwrap_err();
+        assert!(
+            matches!(refused, Error::InvalidInput { ref message } if message.contains("region_bitmap"))
+                || refused.to_string().contains("region_bitmap"),
+            "{refused:?}"
+        );
+
+        let registry = lance::dataset::mem_wal::MemIndexRegistry::default()
+            .with_plugin(Arc::new(BitmapAsBTree))
+            .unwrap();
+        table.as_native().unwrap().set_mem_index_registry(registry);
+        table.set_lsm_write_spec(spec()).await.unwrap();
+
+        let mut builder = table.merge_insert(&["id"]);
+        builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        builder
+            .execute(id_region_reader(vec![
+                (10, "fresh"),
+                (11, "fresh"),
+                (12, "eu"),
+            ]))
+            .await
+            .unwrap();
+
+        let fresh = || async {
+            let batches: Vec<RecordBatch> = table
+                .query()
+                .only_if("region = 'fresh'")
+                .execute()
+                .await
+                .unwrap()
+                .try_collect()
+                .await
+                .unwrap();
+            batches.iter().map(RecordBatch::num_rows).sum::<usize>()
+        };
+        assert_eq!(fresh().await, 2);
+
+        table.close_lsm_writers().await.unwrap();
+        assert_eq!(fresh().await, 2);
+        let plan = table
+            .query()
+            .only_if("region = 'fresh'")
+            .explain_plan(true)
+            .await
+            .unwrap();
+        assert!(
+            plan.contains("_mem_wal") && plan.contains("region_bitmap"),
+            "the flushed generation is read through the index the plugin trained:\n{plan}"
+        );
+    }
 }

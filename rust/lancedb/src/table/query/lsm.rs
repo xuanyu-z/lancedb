@@ -475,7 +475,7 @@ async fn fts_plan(
     // omits un-compacted documents. Reject rather than mislead.
     if !index_maintained(dataset, column, details, "InvertedIndexDetails").await?
         || !resident_memtables_carry(&in_memory, |memtable| {
-            memtable.index_store.get_fts_by_column(column).is_some()
+            !memtable.index_store.fts_granularities_on(column).is_empty()
         })
     {
         return Err(Error::NotSupported {
@@ -713,7 +713,13 @@ async fn vector_plan(
     // Reject rather than silently omit rows, mirroring the FTS arm.
     if !index_maintained(dataset, &column, details, "VectorIndexDetails").await?
         || !resident_memtables_carry(&in_memory, |memtable| {
-            memtable.index_store.get_hnsw_by_column(&column).is_some()
+            memtable
+                .index_store
+                .index_answering(
+                    &column,
+                    &lance::dataset::mem_wal::index::VectorMemQuery::probe(None),
+                )
+                .is_some()
         })
     {
         return Err(Error::NotSupported {
