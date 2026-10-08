@@ -2590,8 +2590,9 @@ pub struct NativeTable {
     pub(crate) pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     // Read-freshness baseline; `Some` only for namespace-backed tables.
     freshness: Option<TableFreshness>,
-    // Memtable index kinds this table's LSM writes maintain: Lance's built-ins
-    // unless a caller adds its own. Shared by every handle on the table.
+    // Memtable index kinds this handle's LSM writes maintain: Lance's built-ins
+    // unless a caller adds its own. Shared with clones of this handle and its
+    // branch handles; a handle opened separately starts from the built-ins.
     mem_index_registry: Arc<std::sync::RwLock<lance::dataset::mem_wal::MemIndexRegistry>>,
 }
 
@@ -2766,6 +2767,13 @@ impl NativeTable {
     /// Maintain the memtable index kinds in `registry` — Lance's built-ins plus
     /// any the caller adds — when this table writes through its LSM spec, and
     /// accept them when a spec names an index of one of those kinds.
+    ///
+    /// The registry belongs to this handle, its clones and its branch handles,
+    /// and is not stored with the table: a handle opened separately starts from
+    /// Lance's built-ins, and a spec naming a kind it does not know refuses its
+    /// writes until it is given the same registry. Writers this handle has
+    /// already opened keep the registry they were opened with; set it before the
+    /// handle's first LSM write.
     pub fn set_mem_index_registry(&self, registry: lance::dataset::mem_wal::MemIndexRegistry) {
         *self
             .mem_index_registry

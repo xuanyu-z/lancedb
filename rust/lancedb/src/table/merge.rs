@@ -1916,6 +1916,8 @@ mod lsm_tests {
     /// its index.
     #[tokio::test]
     async fn lsm_maintains_an_index_kind_from_the_tables_registry() {
+        use lance::index::DatasetIndexExt;
+
         let dir = tempdir().unwrap();
         let conn = connect(dir.path().to_str().unwrap())
             .execute()
@@ -1938,8 +1940,10 @@ mod lsm_tests {
 
         let refused = table.set_lsm_write_spec(spec()).await.unwrap_err();
         assert!(
-            matches!(refused, Error::InvalidInput { ref message } if message.contains("region_bitmap"))
-                || refused.to_string().contains("region_bitmap"),
+            refused.to_string().contains("region_bitmap")
+                && refused
+                    .to_string()
+                    .contains("no registered plugin maintains"),
             "{refused:?}"
         );
 
@@ -1975,18 +1979,55 @@ mod lsm_tests {
             batches.iter().map(RecordBatch::num_rows).sum::<usize>()
         };
         assert_eq!(fresh().await, 2);
+        let (_, _, memtables) = table
+            .as_native()
+            .unwrap()
+            .dataset
+            .shard_writer()
+            .read_snapshot()
+            .await
+            .unwrap()
+            .expect("the merge opened a writer");
+        let active = memtables.expect("the writer keeps memtables").active;
+        assert!(
+            active
+                .index_store
+                .index_names()
+                .contains(&"region_bitmap".to_string()),
+            "the memtable maintains the plugin's index: {:?}",
+            active.index_store.index_names()
+        );
 
         table.close_lsm_writers().await.unwrap();
         assert_eq!(fresh().await, 2);
-        let plan = table
-            .query()
-            .only_if("region = 'fresh'")
-            .explain_plan(true)
-            .await
-            .unwrap();
+        let mut generations = Vec::new();
+        let mem_wal = dir.path().join("t.lance").join("_mem_wal");
+        for shard in std::fs::read_dir(&mem_wal).unwrap() {
+            for entry in std::fs::read_dir(shard.unwrap().path()).unwrap() {
+                let path = entry.unwrap().path();
+                if path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .contains("_gen_")
+                {
+                    generations.push(path);
+                }
+            }
+        }
         assert!(
-            plan.contains("_mem_wal") && plan.contains("region_bitmap"),
-            "the flushed generation is read through the index the plugin trained:\n{plan}"
+            !generations.is_empty(),
+            "closing the writer flushed a generation"
         );
+        for path in generations {
+            let generation = lance::Dataset::open(path.to_str().unwrap()).await.unwrap();
+            let indices = generation.load_indices().await.unwrap();
+            assert!(
+                indices.iter().any(|index| index.name == "region_bitmap"),
+                "{} carries the index the plugin trained: {:?}",
+                path.display(),
+                indices.iter().map(|index| &index.name).collect::<Vec<_>>()
+            );
+        }
     }
 }
