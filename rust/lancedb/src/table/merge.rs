@@ -1767,12 +1767,16 @@ mod lsm_tests {
         assert_eq!(rows, 1, "LSM FTS must still see base rows");
     }
 
-    #[tokio::test]
-    async fn lsm_read_vector_search() {
+    /// A table whose IVF_PQ vector index is maintained by the LSM, with base rows
+    /// filled with their own id and one memtable row filled with 1000, the
+    /// nearest to `[1000; 8]`. `registry` replaces the table's memtable kinds.
+    async fn lsm_vector_table(
+        dir: &std::path::Path,
+        registry: Option<lance::dataset::mem_wal::MemIndexRegistry>,
+    ) -> Table {
         use crate::index::Index;
         use crate::index::vector::IvfPqIndexBuilder;
         use arrow::array::{FixedSizeListBuilder, Float32Builder};
-        use arrow::datatypes::Int64Type;
 
         const DIM: i32 = 8;
         const N: i64 = 256;
@@ -1801,12 +1805,7 @@ mod lsm_tests {
             .unwrap()
         };
 
-        let dir = tempdir().unwrap();
-        let conn = connect(dir.path().to_str().unwrap())
-            .execute()
-            .await
-            .unwrap();
-        // Base rows fill each vector with its own id (0..256); all far from 1000.
+        let conn = connect(dir.to_str().unwrap()).execute().await.unwrap();
         let base = make_batch((0..N).map(|i| (i, i as f32)).collect());
         let base_reader: Box<dyn RecordBatchReader + Send> =
             Box::new(RecordBatchIterator::new(vec![Ok(base)], schema.clone()));
@@ -1824,13 +1823,15 @@ mod lsm_tests {
             .execute()
             .await
             .unwrap();
+        if let Some(registry) = registry {
+            table.as_native().unwrap().set_mem_index_registry(registry);
+        }
         let vec_index = table.list_indices().await.unwrap()[0].name.clone();
         table
             .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes(vec![vec_index]))
             .await
             .unwrap();
 
-        // Insert a vector (filled with 1000) that is nearest to the query.
         let mut builder = table.merge_insert(&[]);
         builder
             .when_matched_update_all(None)
@@ -1840,19 +1841,22 @@ mod lsm_tests {
             schema.clone(),
         ));
         builder.execute(insert_reader).await.unwrap();
+        table
+    }
 
-        // KNN near [1000; DIM]: the default (auto-routed) read surfaces the
-        // memtable row.
-        let stream = table
+    /// The ids of the nearest row to `[1000; 8]` through the default read.
+    async fn nearest_ids(table: &Table) -> crate::Result<Vec<i64>> {
+        use arrow::datatypes::Int64Type;
+
+        let batches: Vec<RecordBatch> = table
             .query()
-            .nearest_to(&[1000.0_f32; 8])
-            .unwrap()
+            .nearest_to(&[1000.0_f32; 8])?
             .limit(1)
             .execute()
-            .await
-            .unwrap();
-        let batches: Vec<_> = stream.try_collect().await.unwrap();
-        let ids: Vec<i64> = batches
+            .await?
+            .try_collect()
+            .await?;
+        Ok(batches
             .iter()
             .flat_map(|b| {
                 b.column_by_name("id")
@@ -1861,12 +1865,121 @@ mod lsm_tests {
                     .values()
                     .to_vec()
             })
-            .collect();
+            .collect())
+    }
+
+    #[tokio::test]
+    async fn lsm_read_vector_search() {
+        let dir = tempdir().unwrap();
+        let table = lsm_vector_table(dir.path(), None).await;
         assert_eq!(
-            ids,
+            nearest_ids(&table).await.unwrap(),
             vec![9999],
             "LSM vector search must rank the memtable row first"
         );
+    }
+
+    /// The vector plugin, except that it declines a routing probe (a search
+    /// for no neighbours) while answering real searches.
+    #[derive(Debug)]
+    struct DeclinesProbes;
+
+    #[derive(Debug)]
+    struct DeclinesProbesIndex(Arc<dyn lance::dataset::mem_wal::index::MemIndex>);
+
+    fn vector_plugin() -> Arc<dyn lance::dataset::mem_wal::index::MemIndexPlugin> {
+        Arc::new(lance::dataset::mem_wal::index::HnswMemIndexPlugin)
+    }
+
+    fn is_probe(query: &dyn lance::dataset::mem_wal::index::MemQuery) -> bool {
+        query
+            .as_any()
+            .downcast_ref::<lance::dataset::mem_wal::index::VectorMemQuery>()
+            .is_some_and(|query| query.k == 0)
+    }
+
+    #[async_trait::async_trait]
+    impl lance::dataset::mem_wal::index::MemIndexPlugin for DeclinesProbes {
+        fn name(&self) -> &str {
+            "DeclinesProbes"
+        }
+        fn details_message(&self) -> &str {
+            "VectorIndexDetails"
+        }
+        fn flush_index_type(&self) -> lance_index::IndexType {
+            vector_plugin().flush_index_type()
+        }
+        fn training_criteria(&self) -> lance_index::scalar::registry::TrainingCriteria {
+            vector_plugin().training_criteria()
+        }
+        async fn resolve(
+            &self,
+            ctx: &lance::dataset::mem_wal::index::ResolveContext<'_>,
+        ) -> lance_core::Result<lance::dataset::mem_wal::index::ResolvedIndex> {
+            vector_plugin().resolve(ctx).await
+        }
+        fn validate(
+            &self,
+            ctx: &lance::dataset::mem_wal::index::MemIndexBuildContext<'_>,
+        ) -> lance_core::Result<()> {
+            vector_plugin().validate(ctx)
+        }
+        fn create(
+            &self,
+            ctx: &lance::dataset::mem_wal::index::MemIndexBuildContext<'_>,
+        ) -> lance_core::Result<Arc<dyn lance::dataset::mem_wal::index::MemIndex>> {
+            Ok(Arc::new(DeclinesProbesIndex(vector_plugin().create(ctx)?)))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl lance::dataset::mem_wal::index::MemIndex for DeclinesProbesIndex {
+        fn columns(&self) -> &[String] {
+            self.0.columns()
+        }
+        fn can_answer(&self, query: &dyn lance::dataset::mem_wal::index::MemQuery) -> bool {
+            !is_probe(query) && self.0.can_answer(query)
+        }
+        fn insert(&self, batch: &RecordBatch, row_offset: u64) -> lance_core::Result<()> {
+            self.0.insert(batch, row_offset)
+        }
+        fn insert_batches(
+            &self,
+            batches: &[lance::dataset::mem_wal::write::StoredBatch],
+        ) -> lance_core::Result<()> {
+            self.0.insert_batches(batches)
+        }
+        fn resident_bytes(&self) -> usize {
+            self.0.resident_bytes()
+        }
+        fn search(
+            &self,
+            query: &dyn lance::dataset::mem_wal::index::MemQuery,
+            ctx: &lance::dataset::mem_wal::index::SearchContext,
+        ) -> lance_core::Result<Option<lance::dataset::mem_wal::index::MemMatches>> {
+            if is_probe(query) {
+                return Ok(None);
+            }
+            self.0.search(query, ctx)
+        }
+        async fn flush(
+            &self,
+            ctx: &lance::dataset::mem_wal::index::FlushContext<'_>,
+        ) -> lance_core::Result<lance::dataset::mem_wal::index::FlushOutcome> {
+            self.0.flush(ctx).await
+        }
+    }
+
+    /// The check that every resident memtable carries the vector index asks
+    /// each one the search it will run, so a replacement kind that declines a
+    /// bare probe but answers real searches still counts.
+    #[tokio::test]
+    async fn lsm_vector_search_asks_resident_indexes_the_search_it_runs() {
+        let dir = tempdir().unwrap();
+        let mut registry = lance::dataset::mem_wal::MemIndexRegistry::default();
+        registry.replace_plugin(Arc::new(DeclinesProbes));
+        let table = lsm_vector_table(dir.path(), Some(registry)).await;
+        assert_eq!(nearest_ids(&table).await.unwrap(), vec![9999]);
     }
 
     /// Claims the base table's bitmap index, which Lance maintains no memtable
