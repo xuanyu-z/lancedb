@@ -13,20 +13,20 @@ categories = ["database-implementations"]
 rust-version = "1.94.0"
 
 [workspace.dependencies]
-lance = { "version" = "=14.0.0-beta.1", default-features = false, "git" = "https://github.com/xuanyu-z/lance.git", "branch" = "memwal-plugin-interface" }
-lance-core = { "version" = "=14.0.0-beta.1", "git" = "https://github.com/xuanyu-z/lance.git", "branch" = "memwal-plugin-interface" }
-lance-datagen = { "version" = "=14.0.0-beta.1", "git" = "https://github.com/xuanyu-z/lance.git", "branch" = "memwal-plugin-interface" }
-lance-file = { "version" = "=14.0.0-beta.1", "git" = "https://github.com/xuanyu-z/lance.git", "branch" = "memwal-plugin-interface" }
-lance-io = { "version" = "=14.0.0-beta.1", default-features = false, "git" = "https://github.com/xuanyu-z/lance.git", "branch" = "memwal-plugin-interface" }
-lance-index = { "version" = "=14.0.0-beta.1", "git" = "https://github.com/xuanyu-z/lance.git", "branch" = "memwal-plugin-interface" }
-lance-linalg = { "version" = "=14.0.0-beta.1", "git" = "https://github.com/xuanyu-z/lance.git", "branch" = "memwal-plugin-interface" }
-lance-namespace = { "version" = "=14.0.0-beta.1", "git" = "https://github.com/xuanyu-z/lance.git", "branch" = "memwal-plugin-interface" }
-lance-namespace-impls = { "version" = "=14.0.0-beta.1", default-features = false, "git" = "https://github.com/xuanyu-z/lance.git", "branch" = "memwal-plugin-interface" }
-lance-table = { "version" = "=14.0.0-beta.1", "git" = "https://github.com/xuanyu-z/lance.git", "branch" = "memwal-plugin-interface" }
-lance-testing = { "version" = "=14.0.0-beta.1", "git" = "https://github.com/xuanyu-z/lance.git", "branch" = "memwal-plugin-interface" }
-lance-datafusion = { "version" = "=14.0.0-beta.1", "git" = "https://github.com/xuanyu-z/lance.git", "branch" = "memwal-plugin-interface" }
-lance-encoding = { "version" = "=14.0.0-beta.1", "git" = "https://github.com/xuanyu-z/lance.git", "branch" = "memwal-plugin-interface" }
-lance-arrow = { "version" = "=14.0.0-beta.1", "git" = "https://github.com/xuanyu-z/lance.git", "branch" = "memwal-plugin-interface" }
+lance = { "version" = "=14.0.0-beta.1", default-features = false, "git" = "https://github.com/xuanyu-z/lance.git", "branch" = "memwal-plugin-interface-14.0.0-beta.1" }
+lance-core = { "version" = "=14.0.0-beta.1", "git" = "https://github.com/xuanyu-z/lance.git", "branch" = "memwal-plugin-interface-14.0.0-beta.1" }
+lance-datagen = { "version" = "=14.0.0-beta.1", "git" = "https://github.com/xuanyu-z/lance.git", "branch" = "memwal-plugin-interface-14.0.0-beta.1" }
+lance-file = { "version" = "=14.0.0-beta.1", "git" = "https://github.com/xuanyu-z/lance.git", "branch" = "memwal-plugin-interface-14.0.0-beta.1" }
+lance-io = { "version" = "=14.0.0-beta.1", default-features = false, "git" = "https://github.com/xuanyu-z/lance.git", "branch" = "memwal-plugin-interface-14.0.0-beta.1" }
+lance-index = { "version" = "=14.0.0-beta.1", "git" = "https://github.com/xuanyu-z/lance.git", "branch" = "memwal-plugin-interface-14.0.0-beta.1" }
+lance-linalg = { "version" = "=14.0.0-beta.1", "git" = "https://github.com/xuanyu-z/lance.git", "branch" = "memwal-plugin-interface-14.0.0-beta.1" }
+lance-namespace = { "version" = "=14.0.0-beta.1", "git" = "https://github.com/xuanyu-z/lance.git", "branch" = "memwal-plugin-interface-14.0.0-beta.1" }
+lance-namespace-impls = { "version" = "=14.0.0-beta.1", default-features = false, "git" = "https://github.com/xuanyu-z/lance.git", "branch" = "memwal-plugin-interface-14.0.0-beta.1" }
+lance-table = { "version" = "=14.0.0-beta.1", "git" = "https://github.com/xuanyu-z/lance.git", "branch" = "memwal-plugin-interface-14.0.0-beta.1" }
+lance-testing = { "version" = "=14.0.0-beta.1", "git" = "https://github.com/xuanyu-z/lance.git", "branch" = "memwal-plugin-interface-14.0.0-beta.1" }
+lance-datafusion = { "version" = "=14.0.0-beta.1", "git" = "https://github.com/xuanyu-z/lance.git", "branch" = "memwal-plugin-interface-14.0.0-beta.1" }
+lance-encoding = { "version" = "=14.0.0-beta.1", "git" = "https://github.com/xuanyu-z/lance.git", "branch" = "memwal-plugin-interface-14.0.0-beta.1" }
+lance-arrow = { "version" = "=14.0.0-beta.1", "git" = "https://github.com/xuanyu-z/lance.git", "branch" = "memwal-plugin-interface-14.0.0-beta.1" }
 lancedb = { path = "rust/lancedb", default-features = false }
 ahash = "0.8"
 # Note that this one does not include pyarrow
